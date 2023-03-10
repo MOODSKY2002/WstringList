@@ -13,7 +13,9 @@ function WSTR_List_Create(byval Count as ulong,byval Lenght as ulong) as WSTRING
    wList.Count       = Count
    wList.WSTR_Lenght = Lenght + 1 '+CHR(0)
    wList.WSTR_Step   = wList.WSTR_Lenght * sizeof(wstring)
-   wList.WSTR_List   = CAllocate(Count,wList.WSTR_Step)
+   wList.WSTR_List   = ExAllocatePoolWithTag(NonPagedPool,Count * wList.WSTR_Step, 80001)
+   RtlZeroMemory wList.WSTR_List,Count * wList.WSTR_Step
+   'wList.WSTR_List   = CAllocate(Count,wList.WSTR_Step)
    return wList
 end function
 
@@ -21,26 +23,37 @@ end function
 sub WSTR_List_Close(wList as WSTRING_List_Type)
    wList.Count       = 0
    wList.WSTR_Lenght = 0
-   Deallocate wList.WSTR_List
+   wList.WSTR_Step   = 0
+   
+   if wList.WSTR_List <> null then 
+      ExFreePool wList.WSTR_List
+      wList.WSTR_List = null
+   end if
+   'Deallocate wList.WSTR_List
 end sub
 
 '数组扩容
 sub WSTR_List_Redim(wList as WSTRING_List_Type,byval Count as ulong)
    dim sCount as ulong = wList.Count
-   dim sList  as PVOID = CAllocate(Count,wList.WSTR_Step)
+   dim sList  as PVOID = ExAllocatePoolWithTag(NonPagedPool,Count * wList.WSTR_Step, 80001)
+   'dim sList  as PVOID = CAllocate(Count,wList.WSTR_Step)
 
-   memcpy sList,wList.WSTR_List,sCount * wList.WSTR_Step      
-   Deallocate wList.WSTR_List         
+   RtlCopyMemory sList,wList.WSTR_List,sCount * wList.WSTR_Step    
+   'memcpy sList,wList.WSTR_List,sCount * wList.WSTR_Step         
+   ExFreePool wList.WSTR_List
+   'Deallocate wList.WSTR_List         
    wList.WSTR_List = sList
    wList.Count     = Count
 end sub
 
+'返回宽字符数组总定义字符容量
+function WSTR_List_GetSize(wList as WSTRING_List_Type) as long
+   function = wList.Count * wList.WSTR_Lenght
+end function
+
 '返回元素指针
 function WSTR_List_GetPtr(wList as WSTRING_List_Type,byval Index as ulong) as wstring ptr
-   if Index < 0 or Index > wList.Count - 1 then EXIT FUNCTION 
-
-   DIM sStringW as wstring ptr     
-   function = wList.WSTR_List + (Index * wList.WSTR_Step)
+   if Index >= 0 and Index < wList.Count then function = wList.WSTR_List + (Index * wList.WSTR_Step)' else messagebox 0,"!!!!!|" & Index,"",0
 end function
 
 '设置一个元素内容
@@ -80,6 +93,88 @@ function WSTR_List_Find(wList as WSTRING_List_Type,byval sStringW as wstring ptr
    next
    return -1
 end function
+
+'宽字符指针进行Split,返回数量以及最长的一行字符串数量
+Function WSTR_List_SplitCount(Expression As wString ptr,Delimiter As wString ptr,byref Count as long,byref Lenght as long) As Long
+   dim as wstring ptr sStart,sOver
+   dim as long ii,sSize,sLenght
+
+    sLenght = wcslen(Delimiter)
+    sStart = Expression
+    Do
+        sOver = wcsstr(sStart,Delimiter)
+        If sOver = null Then Exit Do
+         
+        sSize = sOver - sStart
+        if sSize > Lenght then Lenght = sSize
+        
+        Count = Count + 1
+        sStart = sOver + sLenght
+    Loop
+    
+    If Count Then  '包含至少一个分隔符
+       Count = Count + 1
+       sSize = wcslen(sStart)
+       if sSize > Lenght then Lenght = sSize
+    else '不含分隔符          
+      sSize = wcslen(sStart)
+      if sSize > 0 then 
+         if sSize > Lenght then Lenght = sSize
+         Count = 1
+      end if
+    end if
+    Function = Count
+End Function
+
+'宽字符指针进行Split,并返回宽字符数组
+'AddLenght为每行宽字符扩容量(仅读取数组可=0,每个元素长度为最长元素长度+1,=10每个元素长度为最长元素长度 + 1 + 10)
+Function WSTR_List_Create_Split(Expression As wString ptr,Delimiter As wString ptr,byval AddLenght as long,wList as WSTRING_List_Type) as long
+   dim as long ii,Index,mCount,sSize,mLenght,sLenght
+   dim as wstring ptr sStart,sOver
+
+   if WSTR_List_SplitCount(Expression,Delimiter,mCount,mLenght) = 0 then exit function
+   wList = WSTR_List_Create(mCount,mLenght + AddLenght)
+   sLenght = wcslen(Delimiter)
+   sStart  = Expression
+   
+   Do
+      sOver = wcsstr(sStart,Delimiter)
+      If sOver = null Then Exit Do
+                          
+      sSize = sOver - sStart
+      wcsncpy WSTR_List_GetPtr(wList,Index),sStart,sSize
+      sStart = sOver + sLenght
+      Index = Index + 1 
+   Loop
+    
+   'If Index Then wcscpy WSTR_List_GetPtr(wList,Index),sStart
+   wcscpy WSTR_List_GetPtr(wList,Index),sStart
+   function = mCount
+End Function
+
+'将宽字符数组还原为字符串,并加入分隔符,并返回组合后的字符串总长度(包含分隔符)
+Function WSTR_List_Get_Join(wList as WSTRING_List_Type,Delimiter As wString ptr,byval sStringW as wstring ptr) as long      
+   dim as wstring ptr wTmp,sStart
+   dim as long ii,sSize,sLenght
+   
+   sStart  = sStringW
+   sLenght = wcslen(Delimiter)
+   RtlZeroMemory sStringW,wList.Count * (wList.WSTR_Lenght + sLenght) * sizeof(wstring)
+   'memset sStringW,0,wList.Count * (wList.WSTR_Lenght + sLenght) * sizeof(wstring)
+   
+   for ii = 0 to wList.Count - 1
+      wTmp = WSTR_List_GetPtr(wList,ii)
+      
+      sSize = wcslen(wTmp)
+      wcsncpy sStart,wTmp,sSize      
+      sStart = sStart + sSize
+      
+      wcsncpy sStart,Delimiter,sLenght
+      sStart = sStart + sLenght
+   next
+   Function = sStart - sStringW
+End Function
+                                                         
                         
 '操作示例  
  Common Shared MyWSTRList as WSTRING_List_Type
